@@ -155,4 +155,4 @@ And the SF will be in the same L2 Domain as the phys. port.
 . It is not possible to sniff internal traffic in the eSwitch. Needless to say, DSA-like tags are obviously out of the question. Debugging is almost impossible.
 
 .Scalable Functions bugs
-. Minor SF RX packetloss when receiving packets from a physical port. And it is 100% packetloss when jumbo frames are used. If the packet does not come from a phys. port, but when packets come from esw (e.g. directly from PF), no packet loss is observed and jumbo frames work fine.
+. Minor SF RX packetloss when receiving packets from a phys. port. And it is 100% packetloss when jumbo frames are used. If packets come not from a phys. port, but from eSwitch (e.g. directly from PF), no packetloss is observed and jumbo frames work fine.
