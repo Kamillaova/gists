@@ -1,0 +1,158 @@
+= Mellanox Scalable Functions and vDPA Configuration Guide
+This guide provides step-by-step instructions for configuring Mellanox Cx6+ NICs to use Scalable Functions w/ vDPA.
+
+== Initial Configuration and Reset
+By default, configuration only needs to be applied to a single Physical Function (PF). However, if you plan to use the `esw_multiport` feature (described in a later step), the `mstconfig` and commands below must be executed for *each* PF on the NIC.
+
+Reset the PF configuration:
+[source,bash]
+----
+mstconfig -y -d <pci_address> reset
+----
+
+Configure it:
+[source,bash]
+----
+mstconfig -y -d <pci_address> set LAG_RESOURCE_ALLOCATION=1 PF_BAR2_ENABLE=0 PER_PF_NUM_SF=1 PF_TOTAL_SF=65535 PF_SF_BAR_SIZE=6 SRIOV_EN=0
+----
+NOTE: Replace `<pci_address>` with the Bus-Device-Function identifier for the target PF. *If using `esw_multiport`, repeat these steps for all PFs before rebooting.*
+
+After applying the commands, reboot the system to ensure the changes take effect.
+
+== Configuring Eswitch Mode
+Set the embedded switch (eswitch) mode to `switchdev`:
+[source,bash]
+----
+devlink dev eswitch set pci/<pci_address> mode switchdev
+----
+NOTE: This command only needs to be run for *each PF* if `esw_multiport` will be enabled. Otherwise, you can run it only on one PF.
+
+== Optionally Enabling Multiport
+To enable multiport mode, run the following command on the desired PF.
+
+[source,bash]
+----
+devlink dev param set pci/<pci_address> name esw_multiport value 1 cmode runtime
+----
+IMPORTANT: If you enable `esw_multiport`, you must ensure the `mstconfig` and `devlink dev eswitch` commands in the previous sections were applied to *all* PFs on the NIC.
+
+== Creating and Configuring a Scalable Function
+Create a Sclable Function (SF) on a PF:
+[source,bash]
+----
+devlink port add pci/<pci_address> flavour pcisf pfnum <pf_index> sfnum <sf_index>
+----
+NOTE: Replace `<pf_index>` with the index of the PF (e.g., `0`). Replace `<sf_index>` with the desired SF index.
+
+Set a MAC address for the newly created SF and activate it:
+[source,bash]
+----
+devlink port function set pci/<pci_address>/<sf_port_id> hw_addr <unicast_mac_address> state active
+----
+
+NOTE: `<sf_port_id>` is obtained from the output of the `devlink port add` command.
+
+== Finding the Auxiliary Device Index
+Identify the auxiliary device index for the SF:
+[source,bash]
+----
+devlink dev | grep sf
+----
+Use this index (referred to as `<aux_dev>` below) for subsequent configuration steps.
+
+== Optionally Enabling vDPA
+Enable vnet (vDPA) device for the SF (optional):
+[source,bash]
+----
+devlink dev param set auxiliary/mlx5_core.sf.<aux_dev> name enable_vnet value 1 cmode driverinit
+----
+
+== Optionally Enabling RDMA and ROCE
+Enable Remote Direct Memory Access (RDMA) and RDMA over Converged Ethernet (ROCE) for the SF (optional):
+[source,bash]
+----
+devlink dev param set auxiliary/mlx5_core.sf.<aux_dev> name enable_rdma value 1 cmode driverinit
+devlink dev param set auxiliary/mlx5_core.sf.<aux_dev> name enable_roce value 1 cmode driverinit
+----
+
+== Optionally Enabling Ethernet port netdev (for host)
+Enable netdev for the SF ("non-representor"), can be used from host (optional):
+[source,bash]
+----
+devlink dev param set auxiliary/mlx5_core.sf.<aux_dev> name enable_eth value 1 cmode driverinit
+----
+NOTE: This creates a netdev with 's' in name instead of 'sf' (udev).
+
+== Reloading the Driver and Verifying Setup
+Reload the driver for the SF to apply the changes:
+[source,bash]
+----
+devlink dev reload auxiliary/mlx5_core.sf.<aux_dev>
+----
+
+Verify the vDPA management devices (when `enable_vnet=1`):
+[source,bash]
+----
+vdpa mgmtdev show
+----
+
+Verify RDMA device (when `enable_rdma=1`):
+[source,bash]
+----
+rdma dev
+----
+
+Verify non-representor netdev (when `enable_eth=1`):
+[source,bash]
+----
+ip link
+----
+
+== Setting up a vDPA device
+
+Create a vDPA device:
+[source,bash]
+----
+vdpa dev add name vdpa0 mgmtdev auxiliary/mlx5_core.sf.<aux_dev> mac <mac_address> max_vqp <max_vqp_count> mtu <mtu>
+----
+
+List all VDPA devices to confirm creation:
+[source,bash]
+----
+vdpa dev
+----
+
+Locate the character device file for use with QEMU:
+[source,bash]
+----
+file "/dev/$(echo /sys/bus/vdpa/devices/vdpa0/vhost-vdpa-* | rev | cut -d/ -f-1 | rev)"
+----
+
+== Configuring the representor netdev
+SF representor netdev is used to configure SF switching in eSwitch of the NIC. For example, you can create a bridge and set both SF representor netdev and PF netdev as masters of that bridge. (AFAIU You cannot add foreign (not from the same PHYSICAL NIC) netdevs as masters of this bridge because hardware offloading will not work)
+
+Create a bridge
+[source,bash]
+----
+ip link add br0 type bridge
+----
+
+Set netdevs as masters of this bridge
+[source,bash]
+----
+ip link set dev nic0pf0 master br0
+ip link set dev nic0pf0sf0 master br0
+----
+
+And the SF will be in the same L2 Domain as the phys. port.
+
+= Additional notes
+
+.Scalable Functions and and other related restrictions
+. When using `esw_multiport` mode, PFs ports are "isolated" in the bridge. When using NPAR (NIC partitioning, e.g. when `NUM_OF_PF` > phys. port count), the paired (second) port is in the same bridge (without isolation) as the first port.
+. The maximum number of SFs that can be created per PF (tested on Cx6 Dx) is 511. NPAR pairs (second ports) cannot have SFs, you cannot double the number of SFs.
+. It is not possible to prevent MAC address changes for eth and vnet (vDPA) ports. You can only set the src mac filter for whole SF. See https://forums.developer.nvidia.com/t/338784.
+. It is not possible to sniff internal traffic in the eSwitch. Needless to say, DSA-like tags are obviously out of the question. Debugging is almost impossible.
+
+.Scalable Functions bugs
+. Minor SF RX packetloss when receiving packets from a physical port. And it is 100% packetloss when jumbo frames are used. If the packet does not come from a phys. port, but when packets come from esw (e.g. directly from PF), no packet loss is observed and jumbo frames work fine.
