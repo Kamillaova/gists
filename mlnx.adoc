@@ -1,3 +1,5 @@
+Original: https://gist.github.com/Kamillaova/287c242c57aadc548efdb763243c13c4
+
 = Mellanox Scalable Functions and vDPA Configuration Guide
 This guide provides step-by-step instructions for configuring Mellanox Cx6+ NICs to use Scalable Functions w/ vDPA.
 
@@ -10,7 +12,7 @@ Reset the PF configuration:
 mstconfig -y -d <pci_address> reset
 ----
 
-Configure it:
+Configure it (`LAG_RESOURCE_ALLOCATION=1` is only required when using `esw_multiport` or bonding):
 [source,bash]
 ----
 mstconfig -y -d <pci_address> set LAG_RESOURCE_ALLOCATION=1 PF_BAR2_ENABLE=0 PER_PF_NUM_SF=1 PF_TOTAL_SF=65535 PF_SF_BAR_SIZE=6 SRIOV_EN=0
